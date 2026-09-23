@@ -1,12 +1,50 @@
 import json
 
 from datetime import datetime
+from decimal import Decimal
+from uuid import UUID
+from enum import Enum
+from pathlib import Path
+from dataclasses import is_dataclass, asdict
+
 from sqlalchemy import Boolean, DateTime, Index, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, validates
 from openg2p_fastapi_common.models import BaseORMModel
 
 from .data_models import ProcessStatusEnum
+
+
+class UniversalJSONEncoder(json.JSONEncoder):
+    """
+    JSON encoder that handles common Python types not natively
+    serializable by json.dumps() — datetime, Decimal, UUID, Enum,
+    sets, bytes, Path, dataclasses, and generic objects.
+    """
+
+    def default(self, obj):
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        if isinstance(obj, Decimal):
+            return float(obj)
+        if isinstance(obj, (set, frozenset)):
+            return list(obj)
+        if isinstance(obj, (bytes, bytearray)):
+            return obj.decode("utf-8", errors="replace")
+        if isinstance(obj, UUID):
+            return str(obj)
+        if isinstance(obj, Path):
+            return str(obj)
+        if isinstance(obj, Enum):
+            return obj.value
+        if is_dataclass(obj) and not isinstance(obj, type):
+            return asdict(obj)
+        if hasattr(obj, "to_dict"):
+            return obj.to_dict()
+        if hasattr(obj, "__dict__"):
+            return obj.__dict__
+        return super().default(obj)
+
 
 class OutgoingRawData(BaseORMModel):
 
@@ -62,6 +100,10 @@ class OutgoingRawDataPayload(BaseORMModel):
     def update_raw_data_text(self, key, value):
         if value:
             if isinstance(value, (dict, list)):
+                # Round-trip through the encoder so both raw_data_text and the
+                # JSONB column are free of Decimal/datetime/UUID/etc. SQLAlchemy
+                # uses the stdlib json encoder for JSONB, which cannot handle them.
+                value = json.loads(json.dumps(value, cls=UniversalJSONEncoder))
                 self.raw_data_text = json.dumps(value)
             else:
                 self.raw_data_text = str(value)
