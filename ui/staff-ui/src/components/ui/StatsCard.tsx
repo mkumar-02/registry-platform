@@ -28,10 +28,17 @@ const StatsCard = ({
     onNavigate,
 }: StatsCardProps) => {
     const t = useTranslations();
+    const isMessagesCard = stats_endpoint.includes("messages");
     const { data, loading, error } = useFetch<any>({
         url: stats_endpoint,
         enabled: !!stats_endpoint,
     });
+    const { data: outgoingMessages, loading: outgoingLoading } = useFetch<any>({
+        url: "/api/stats/outgoing-messages",
+        enabled: isMessagesCard,
+    });
+    const incomingMessages = isMessagesCard ? data : null;
+    const cardLoading = loading || (isMessagesCard && outgoingLoading);
 
     const { title, rows } = useMemo((): { title: string; rows: StatsRow[] } => {
         if (!data) return { title: t('items'), rows: [] };
@@ -98,14 +105,14 @@ const StatsCard = ({
                     {
                         id: "incomingMessages",
                         label: t('incoming_messages'),
-                        value: data.no_of_messages|| "0",
+                        value: incomingMessages.no_of_messages || "0",
                         imageUrl: "/images/messages/message_icon.png",
                         href: "/incoming-messages",
                     },
                     {
                         id: "outgoingMessages",
                         label: t('outgoing_messages'),
-                        value: data.outgoing || "0",
+                        value: outgoingMessages?.no_of_messages || "0",
                         imageUrl: "/images/messages/message_icon.png",
                         href: "/outgoing-messages",
                     },
@@ -136,7 +143,7 @@ const StatsCard = ({
         }
 
         return { title: t('items'), rows: [] };
-    }, [data, stats_endpoint, t]);
+    }, [data, incomingMessages, outgoingMessages, stats_endpoint, t]);
 
     const totalCount = useMemo(() => {
         // For registers, just count how many registers
@@ -150,15 +157,15 @@ const StatsCard = ({
             return data?.total_submissions || 0;
         }
         if (stats_endpoint.includes("messages")) {
-            return data?.no_of_messages || 0;
+            return (incomingMessages?.no_of_messages || 0) + (outgoingMessages?.no_of_messages || 0);
         }
         if (stats_endpoint.includes("/tasks")) {
             return data?.total || 0;
         }
-    }, [data, stats_endpoint]);
+    }, [data, incomingMessages, outgoingMessages, stats_endpoint]);
 
     const handleCardActivate = () => {
-        if (loading) return;
+        if (cardLoading) return;
         if (active) {
             onNavigate?.();
             return;
@@ -187,17 +194,17 @@ const StatsCard = ({
                     width={20}
                     height={20}
                     alt=""
-                    className={active ? "invert" : "opacity-60"}
+                    className={`shrink-0 ${active ? "invert" : "opacity-60"}`}
                 />
             )}
 
             {/* value */}
-            <span className="font-roboto text-[16px] font-bold leading-7 truncate overflow-hidden whitespace-nowrap" title={String(row.value)}>
+            <span className="shrink-0 font-roboto text-[16px] font-bold leading-7" title={String(row.value)}>
                 {row.value}
             </span>
 
             {/* label */}
-            <span className="font-roboto text-[16px] font-medium leading-7 opacity-80 truncate overflow-hidden whitespace-nowrap" title={row.label}>
+            <span className="min-w-0 flex-1 font-roboto text-[16px] font-medium leading-snug opacity-80 max-md:line-clamp-2 md:overflow-hidden md:text-ellipsis md:whitespace-nowrap" title={row.label}>
                 {row.label}
             </span>
         </>
@@ -209,22 +216,22 @@ const StatsCard = ({
             tabIndex={0}
             onClick={handleCardClick}
             onKeyDown={handleCardKeyDown}
-            className={`flex flex-col justify-between transition-all duration-200 w-full rounded-[10px] px-7 py-6 cursor-pointer ${active ? "border-black bg-neutral-first text-neutral-second" : "bg-secondary-second text-secondary-third"}`}
+            className={`flex flex-col justify-between transition-all duration-200 w-full min-w-0 rounded-[10px] px-4 py-5 sm:px-5 sm:py-6 cursor-pointer ${active ? "border-black bg-neutral-first text-neutral-second" : "bg-secondary-second text-secondary-third"}`}
         >
             <div className="min-h-40">
                 {/* count and title */}
                 <div className="mb-4 mt-4">
-                    {loading ? (
+                    {cardLoading ? (
                         <div className="animate-pulse space-y-2">
                             <div className="h-12.5 w-32 rounded bg-secondary-third dark:bg-secondary-second-700"></div>
                             <div className="h-7 w-24 rounded bg-secondary-third dark:bg-secondary-second-700"></div>
                         </div>
                     ) : (
                         <>
-                            <h2 className="font-roboto text-[45px] font-bold leading-none truncate overflow-hidden whitespace-nowrap" title={String(totalCount ?? "")}>
+                            <h2 className="font-roboto text-[32px] sm:text-[40px] lg:text-[45px] font-bold leading-none truncate" title={String(totalCount ?? "")}>
                                 {totalCount}
                             </h2>
-                            <h3 className="font-roboto text-[22px] font-bold leading-7 truncate overflow-hidden whitespace-nowrap" title={title}>
+                            <h3 className="font-roboto text-lg sm:text-xl lg:text-[22px] font-bold leading-snug max-md:line-clamp-2 md:overflow-hidden md:text-ellipsis md:whitespace-nowrap" title={title}>
                                 {title}
                             </h3>
                         </>
@@ -232,7 +239,7 @@ const StatsCard = ({
                 </div>
 
 
-                {loading ? (
+                {cardLoading ? (
                     <div className="animate-pulse">
                         <div className="h-4 w-24 rounded bg-secondary-third dark:bg-secondary-second-700 mb-1.75"></div>
                         <div className="h-5 w-32 rounded bg-secondary-third dark:bg-secondary-second-700"></div>
@@ -241,19 +248,19 @@ const StatsCard = ({
                     <p className="text-sm text-toast-failed">{t('failed_to_load')}</p>
                 ) : (
                     // items
-                    <ul>
+                    <ul className="min-w-0">
                         {rows.map((row) => (
-                            <li key={row.id}>
+                            <li key={row.id} className="min-w-0">
                                 {row.href ? (
                                     <Link
                                         href={row.href}
                                         onClick={(event) => event.stopPropagation()}
-                                        className="flex items-center gap-2 cursor-pointer no-underline"
+                                        className="flex items-center gap-2 min-w-0 cursor-pointer no-underline"
                                     >
                                         {rowContent(row)}
                                     </Link>
                                 ) : (
-                                    <div className="flex items-center gap-2">
+                                    <div className="flex items-center gap-2 min-w-0">
                                         {rowContent(row)}
                                     </div>
                                 )}

@@ -16,12 +16,41 @@ import {
   mergeMinDateBounds,
   mergeMaxDateBounds,
 } from '../utils/dateInput';
-import { setValue, resetWidget } from '../store/widgetSlice';
+import { setValue, setError, setTouched, resetWidget } from '../store/widgetSlice';
 import { WidgetRootState } from '../store';
 import { validateWidget } from '../utils/validation';
+import { shouldRequireWidget } from '../utils/conditions';
 import { isAllowedKey, parseNumber, applyDecimalPrecision } from '../utils/numberInput';
 
 type ResolveSchemaLabelFn = (value: string | undefined | null) => string;
+
+const isColumnRequired = (column: Record<string, any>, rowData: Record<string, any>): boolean =>
+  shouldRequireWidget(
+    column['widget-data-options'],
+    rowData,
+    !!(column['widget-required'] || column['widget-data-validation']?.required),
+  );
+
+const useTableCellError = (widgetId: string | undefined): string | null => {
+  const error = useSelector((state: WidgetRootState) =>
+    widgetId ? state.widget?.errors?.[widgetId]?.[0] : undefined,
+  );
+  const touched = useSelector((state: WidgetRootState) =>
+    widgetId ? Boolean(state.widget?.touched?.[widgetId]) : false,
+  );
+  return touched && error ? error : null;
+};
+
+const TableCellErrorText = ({ message }: { message: string | null }) => (
+  <p
+    className="table-cell-field-error text-xs mt-0.5 leading-tight"
+    style={{ color: message ? 'var(--owt-color-error)' : 'transparent' }}
+    aria-live="polite"
+    aria-hidden={!message}
+  >
+    {message || '\u00a0'}
+  </p>
+);
 
 const getDateColumnConstraintError = (
   column: BaseWidgetConfig,
@@ -75,37 +104,44 @@ const getDateColumnConstraintError = (
   );
 };
 
-const isTableRowDataValid = (
+const getTableRowCellErrors = (
   rowData: Record<string, any>,
   columns: any[],
   tableReadonly: boolean,
   resolveSchemaLabel: ResolveSchemaLabelFn,
-): boolean => {
+): Record<string, string[]> => {
+  const cellErrors: Record<string, string[]> = {};
+
   for (const col of columns) {
     if (tableReadonly || col['widget-readonly'] === true) {
       continue;
     }
 
     const columnKey = col['column-key'];
+    if (!columnKey) {
+      continue;
+    }
+
     const cellValue = rowData[columnKey];
     const widgetErrors = validateWidget(
       cellValue,
       col['widget-data-validation'],
-      col['widget-required']
+      isColumnRequired(col, rowData),
     );
     if (widgetErrors.length > 0) {
-      return false;
+      cellErrors[columnKey] = widgetErrors;
+      continue;
     }
 
     if ((col.widget || 'text') === 'date') {
       const dateError = getDateColumnConstraintError(col, cellValue, rowData, resolveSchemaLabel);
       if (dateError) {
-        return false;
+        cellErrors[columnKey] = [dateError];
       }
     }
   }
 
-  return true;
+  return cellErrors;
 };
 
 
@@ -120,8 +156,11 @@ const TableCellSelect = ({ config, value, onValueChange }: TableCellSelectProps)
   const {
     dataSourceOptions,
     loading,
+    error,
+    touched,
   } = useBaseWidget({ config });
   const isReadonly = config['widget-readonly'] || false;
+  const errorMessage = touched && error.length > 0 ? error[0] : null;
 
   return (
     <div className="table-cell-field w-full">
@@ -130,7 +169,7 @@ const TableCellSelect = ({ config, value, onValueChange }: TableCellSelectProps)
         onChange={(e) => {
           const rawValue = e.target.value;
           if (rawValue === '') {
-            onValueChange(undefined);
+            onValueChange(null);
             return;
           }
           const selectedOption = dataSourceOptions.find(
@@ -144,7 +183,9 @@ const TableCellSelect = ({ config, value, onValueChange }: TableCellSelectProps)
         } table-cell-input`}
         style={{
           borderRadius: '10px',
-          borderColor: 'var(--owt-widget-input-border)',
+          borderColor: errorMessage
+            ? 'var(--owt-color-error)'
+            : 'var(--owt-widget-input-border)',
           backgroundColor: isReadonly || loading ? 'var(--owt-color-bg-alt)' : 'var(--owt-color-bg)',
         }}
       >
@@ -155,9 +196,7 @@ const TableCellSelect = ({ config, value, onValueChange }: TableCellSelectProps)
           </option>
         ))}
       </select>
-      <p className="table-cell-field-error" aria-hidden="true">
-        {'\u00a0'}
-      </p>
+      <TableCellErrorText message={errorMessage} />
     </div>
   );
 };
@@ -201,6 +240,7 @@ const TableCellText = ({ config, value, onValueChange }: TableCellTextProps) => 
   const isReadonly = config['widget-readonly'] || false;
   const placeholder = config['widget-data-placeholder'] || '';
   const maxLength = config['widget-data-validation']?.maxLength;
+  const errorMessage = useTableCellError(config['widget-id']);
 
   const displayValue = value !== null && value !== undefined ? String(value) : '';
 
@@ -209,7 +249,7 @@ const TableCellText = ({ config, value, onValueChange }: TableCellTextProps) => 
       <input
         type="text"
         value={displayValue}
-        onChange={(e) => onValueChange(e.target.value)}
+        onChange={(e) => onValueChange(e.target.value === '' ? null : e.target.value)}
         disabled={isReadonly}
         placeholder={placeholder}
         maxLength={maxLength}
@@ -218,13 +258,13 @@ const TableCellText = ({ config, value, onValueChange }: TableCellTextProps) => 
         } table-cell-input`}
         style={{
           borderRadius: '10px',
-          borderColor: 'var(--owt-widget-input-border)',
+          borderColor: errorMessage
+            ? 'var(--owt-color-error)'
+            : 'var(--owt-widget-input-border)',
           backgroundColor: isReadonly ? 'var(--owt-color-bg-alt)' : 'var(--owt-color-bg)',
         }}
       />
-      <p className="table-cell-field-error" aria-hidden="true">
-        {'\u00a0'}
-      </p>
+      <TableCellErrorText message={errorMessage} />
     </div>
   );
 };
@@ -254,6 +294,7 @@ const TableCellNumber = ({ config, value, onValueChange }: TableCellNumberProps)
   const committedDisplay = value !== null && value !== undefined ? String(value) : '';
   const [draft, setDraft] = useState<string | null>(null);
   const displayValue = draft !== null ? draft : committedDisplay;
+  const errorMessage = useTableCellError(config['widget-id']);
 
   const isWithinBounds = (numValue: number) => {
     if (min !== undefined && numValue < min) {
@@ -272,7 +313,7 @@ const TableCellNumber = ({ config, value, onValueChange }: TableCellNumberProps)
     const inputValue = e.target.value;
     if (inputValue === '') {
       setDraft(null);
-      onValueChange('');
+      onValueChange(null);
       return;
     }
     setDraft(inputValue);
@@ -323,13 +364,13 @@ const TableCellNumber = ({ config, value, onValueChange }: TableCellNumberProps)
         } table-cell-input`}
         style={{
           borderRadius: '10px',
-          borderColor: 'var(--owt-widget-input-border)',
+          borderColor: errorMessage
+            ? 'var(--owt-color-error)'
+            : 'var(--owt-widget-input-border)',
           backgroundColor: isReadonly ? 'var(--owt-color-bg-alt)' : 'var(--owt-color-bg)',
         }}
       />
-      <p className="table-cell-field-error" aria-hidden="true">
-        {'\u00a0'}
-      </p>
+      <TableCellErrorText message={errorMessage} />
     </div>
   );
 };
@@ -345,6 +386,7 @@ const TableCellDate = ({ config, value, rowValues, onValueChange }: TableCellDat
   const { t } = useWidgetContext();
   const isReadonly = config['widget-readonly'] || false;
   const placeholder = config['widget-data-placeholder'] || '';
+  const requiredError = useTableCellError(config['widget-id']);
   const optionsConfig = config['widget-data-options'];
   const formatConfig = config['widget-data-format'];
   const dateConstraint = formatConfig?.dateConstraint || 'any';
@@ -412,7 +454,7 @@ const TableCellDate = ({ config, value, rowValues, onValueChange }: TableCellDat
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const nextValue = e.target.value;
-    onValueChange(nextValue);
+    onValueChange(nextValue === '' ? null : nextValue);
     if (!nextValue) {
       setConstraintError(null);
       return;
@@ -427,7 +469,7 @@ const TableCellDate = ({ config, value, rowValues, onValueChange }: TableCellDat
     setConstraintError(error);
   };
 
-  const hasError = Boolean(constraintError);
+  const errorMessage = constraintError || requiredError;
 
   return (
     <div className="table-cell-field w-full">
@@ -439,27 +481,19 @@ const TableCellDate = ({ config, value, rowValues, onValueChange }: TableCellDat
         placeholder={placeholder}
         min={effectiveMinDate}
         max={effectiveMaxDate}
-        title={constraintError || tSchema(t, config['widget-data-tooltip'])}
+        title={errorMessage || tSchema(t, config['widget-data-tooltip'])}
         className={`w-full h-[28px] px-2 text-sm border focus:outline-none ${
           isReadonly ? 'cursor-not-allowed' : ''
         } table-cell-input`}
         style={{
           borderRadius: '10px',
-          borderColor: hasError
+          borderColor: errorMessage
             ? 'var(--owt-color-error)'
             : 'var(--owt-widget-input-border)',
           backgroundColor: isReadonly ? 'var(--owt-color-bg-alt)' : 'var(--owt-color-bg)',
         }}
       />
-      <p
-        className="table-cell-field-error text-xs mt-0.5 leading-tight"
-        style={{
-          color: hasError ? 'var(--owt-color-error)' : 'transparent',
-        }}
-        aria-live="polite"
-      >
-        {constraintError ?? '\u00a0'}
-      </p>
+      <TableCellErrorText message={errorMessage} />
     </div>
   );
 };
@@ -545,33 +579,37 @@ export const TableWidget = ({ config }: TableWidgetProps) => {
     return row;
   }, [isAdding, newRowData, columns, widgetConfig, rows.length, storeValues]);
 
-  const canSaveEditingRow = useMemo(() => {
-    const rowData = resolveEditingRowData();
-    if (!rowData) {
-      return false;
-    }
-    return isTableRowDataValid(
+  const markRowFieldErrors = useCallback((
+    rowData: Record<string, any>,
+    rowIndex: number,
+  ): boolean => {
+    const cellErrors = getTableRowCellErrors(
       rowData,
       columns,
       isReadonly,
       resolveSchemaLabel,
     );
-  }, [resolveEditingRowData, columns, isReadonly, resolveSchemaLabel]);
+    let isValid = true;
 
-  const canSaveNewRow = useMemo(() => {
-    const rowData = resolveNewRowData();
-    if (!rowData) {
-      return false;
-    }
-    const hasValue = columns.some((col) => {
-      const value = rowData[col['column-key']];
-      return value !== null && value !== undefined && value !== '';
+    columns.forEach((col) => {
+      const key = col['column-key'];
+      if (!key) {
+        return;
+      }
+
+      const cellWidgetId = `${widgetConfig['widget-id']}-row-${rowIndex}-col-${key}`;
+      const errors = cellErrors[key] || [];
+      if (errors.length > 0) {
+        isValid = false;
+        dispatch(setError({ widgetId: cellWidgetId, errors }));
+        dispatch(setTouched({ widgetId: cellWidgetId, touched: true }));
+      } else {
+        dispatch(setError({ widgetId: cellWidgetId, errors: [] }));
+      }
     });
-    if (!hasValue) {
-      return false;
-    }
-    return isTableRowDataValid(rowData, columns, isReadonly, resolveSchemaLabel);
-  }, [resolveNewRowData, columns, isReadonly, resolveSchemaLabel]);
+
+    return isValid;
+  }, [columns, isReadonly, resolveSchemaLabel, widgetConfig, dispatch]);
 
   const showConfirmation = useCallback((message: string, onConfirm: () => void, onCancel: () => void) => {
     setConfirmationState({
@@ -670,7 +708,7 @@ export const TableWidget = ({ config }: TableWidgetProps) => {
   const saveEdit = useCallback(async () => {
     const rowData = resolveEditingRowData();
     if (!editingState || !rowData) return;
-    if (!canSaveEditingRow) return;
+    if (!markRowFieldErrors(rowData, editingState.rowIndex)) return;
 
     const rowIndex = editingState.rowIndex;
     setLoadingRowIndex(rowIndex);
@@ -732,7 +770,7 @@ export const TableWidget = ({ config }: TableWidgetProps) => {
     } finally {
       setLoadingRowIndex(null);
     }
-  }, [editingState, canSaveEditingRow, resolveEditingRowData, rows, onChange, dataSourceRequestHandler, apiConfig, t, isSectionEditMode, originalRows, columns, widgetConfig, dispatch]);
+  }, [editingState, markRowFieldErrors, resolveEditingRowData, rows, onChange, dataSourceRequestHandler, apiConfig, t, isSectionEditMode, originalRows, columns, widgetConfig, dispatch]);
 
   const startAdd = useCallback(() => {
     if (isAnyRowEditing) {
@@ -740,7 +778,8 @@ export const TableWidget = ({ config }: TableWidgetProps) => {
     }
     const emptyRow: any = {};
     columns.forEach((col) => {
-      emptyRow[col['column-key']] = col['widget-data-default'] || '';
+      const defaultValue = col['widget-data-default'];
+      emptyRow[col['column-key']] = defaultValue !== undefined ? defaultValue : null;
     });
     setIsAdding(true);
     setNewRowData(emptyRow);
@@ -749,7 +788,8 @@ export const TableWidget = ({ config }: TableWidgetProps) => {
   const saveAdd = useCallback(async () => {
     const rowData = resolveNewRowData();
     if (!isAdding || !rowData) return;
-    if (!canSaveNewRow) return;
+    const rowIndex = rows.length;
+    if (!markRowFieldErrors(rowData, rowIndex)) return;
 
     setLoadingRowIndex(-1);
 
@@ -780,7 +820,7 @@ export const TableWidget = ({ config }: TableWidgetProps) => {
     } finally {
       setLoadingRowIndex(null);
     }
-  }, [isAdding, resolveNewRowData, canSaveNewRow, rows, onChange, dataSourceRequestHandler, apiConfig, t, columns, widgetConfig, dispatch]);
+  }, [isAdding, resolveNewRowData, markRowFieldErrors, rows, onChange, dataSourceRequestHandler, apiConfig, t, columns, widgetConfig, dispatch]);
 
   const deleteRow = useCallback(async (rowIndex: number) => {
     if (isAnyRowEditing) {
@@ -807,15 +847,19 @@ export const TableWidget = ({ config }: TableWidgetProps) => {
         console.warn('[TableWidget] API delete operations require migration to dataSourceRequestHandler pattern');
       }
 
-      if (isSectionEditMode) {
+      const row = rows[rowIndex];
+      const addedInSession =
+        row?.edit_action === 'ADD' ||
+        !(typeof row?.internal_record_id === 'string' && row.internal_record_id.length > 0);
+
+      if (addedInSession || !isSectionEditMode) {
+        onChange(rows.filter((_, i) => i !== rowIndex));
+      } else {
         const newRows = [...rows];
         newRows[rowIndex] = {
           ...newRows[rowIndex],
           edit_action: 'DELETE',
         };
-        onChange(newRows);
-      } else {
-        const newRows = rows.filter((_, i) => i !== rowIndex);
         onChange(newRows);
       }
     } catch (error) {
@@ -1063,27 +1107,29 @@ export const TableWidget = ({ config }: TableWidgetProps) => {
 
   const tableWidgetId = `table-widget-${widgetConfig['widget-id']}`;
   const columnSpan = widgetConfig['widget-column-span'] || 2;
-  const minWidth = columnSpan * 200; // Each column is 200px
   const actionsHeaderLabel = toTitleCase(t?.('common.actions') || 'Actions');
 
   return (
     <>
       <style>{`
-        /* Table widget styling - width based on column span */
+        /* Table stays inside its section; columns scroll inside the table */
         .${tableWidgetId} {
           width: 100%;
-          min-width: ${minWidth}px;
+          min-width: 0;
+          max-width: 100%;
         }
         
         /* Target the widget-container parent when it contains a table widget */
         .widget-container[data-widget-id="${widgetConfig['widget-id']}"] {
-          min-width: ${minWidth}px;
+          min-width: 0;
+          max-width: 100%;
           width: 100%;
           /* Remove flex properties to avoid height issues */
           flex: none;
         }
         
         /* In horizontal panels, make table widget span specified columns */
+        @media (min-width: 1024px) {
         .panel-horizontal .widget-container[data-widget-id="${widgetConfig['widget-id']}"],
         [data-panel-orientation="horizontal"] .widget-container[data-widget-id="${widgetConfig['widget-id']}"] {
           grid-column: span ${columnSpan};
@@ -1095,6 +1141,7 @@ export const TableWidget = ({ config }: TableWidgetProps) => {
           grid-column: 1 / -1; /* Span all columns in grid */
           width: 100%;
           flex: 1 1 100%;
+        }
         }
         
         /* Compact styling for widgets inside table cells - hide labels and reduce margins */
@@ -1145,15 +1192,15 @@ export const TableWidget = ({ config }: TableWidgetProps) => {
       `}</style>
       <div className={`table-widget-container ${tableWidgetId}`}>
       {confirmationState?.show && (
-        <div className={`${themeRoot.className} fixed inset-0 flex items-center justify-center z-50`} style={{ ...themeRoot.style, backgroundColor: 'var(--owt-color-overlay)' }}>
-          <div className="rounded-lg p-6 max-w-md w-full mx-4" style={{ backgroundColor: 'var(--owt-color-bg)' }}>
-            <h3 className="text-lg font-semibold mb-4" style={{ color: 'var(--owt-color-text)' }}>
+        <div className={`${themeRoot.className} fixed inset-0 z-50 flex items-center justify-center overflow-y-auto p-3 sm:p-4`} style={{ ...themeRoot.style, backgroundColor: 'var(--owt-color-overlay)' }}>
+          <div className="my-auto w-full min-w-0 max-w-md rounded-lg p-4 sm:p-6" style={{ backgroundColor: 'var(--owt-color-bg)' }}>
+            <h3 className="mb-4 text-base font-semibold sm:text-lg" style={{ color: 'var(--owt-color-text)' }}>
               {t?.('table.confirm') || 'Confirm Action'}
             </h3>
-            <p className="mb-6" style={{ color: 'var(--owt-color-text)' }}>
+            <p className="mb-6 break-words" style={{ color: 'var(--owt-color-text)' }}>
               {confirmationState.message}
             </p>
-            <div className="flex justify-end gap-3">
+            <div className="flex flex-wrap justify-end gap-3">
               <button
                 onClick={confirmationState.onCancel}
                 className="px-4 py-2 text-sm font-medium"
@@ -1183,12 +1230,12 @@ export const TableWidget = ({ config }: TableWidgetProps) => {
         </div>
       )}
       {operations.add && !isReadonly && isEnabled && (isSectionEditMode || !isAnyRowEditing) && (
-        <div className="flex justify-end mb-2">
+        <div className="mb-2 flex justify-end">
           <button
             type="button"
             onClick={startAdd}
             disabled={loadingRowIndex !== null}
-            className="px-3 py-1 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+            className="max-w-full px-3 py-1 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
             style={{
               borderRadius: 'var(--owt-btn-border-radius)',
               border: '1px solid var(--owt-btn-primary-border)',
@@ -1201,7 +1248,7 @@ export const TableWidget = ({ config }: TableWidgetProps) => {
         </div>
       )}
 
-        <div className="overflow-x-auto border" style={{ borderRadius: 'var(--owt-widget-table-border-radius)', borderColor: 'var(--owt-widget-table-border-color)' }}>
+        <div className="max-w-full min-w-0 overflow-x-auto border" style={{ borderRadius: 'var(--owt-widget-table-border-radius)', borderColor: 'var(--owt-widget-table-border-color)' }}>
           <table className="min-w-full" style={{ borderCollapse: 'separate', borderSpacing: 0 }}>
             <thead style={{ backgroundColor: 'var(--owt-widget-table-header-bg)' }}>
               <tr style={{ borderBottom: '1px solid var(--owt-widget-table-row-divider)' }}>
@@ -1216,7 +1263,7 @@ export const TableWidget = ({ config }: TableWidgetProps) => {
                       style={{ color: 'var(--owt-widget-table-header-color)' }}
                       title={headerLabel}
                     >
-                      <span className="block truncate">{headerLabel}</span>
+                      <span className="block min-w-0 truncate">{headerLabel}</span>
                     </th>
                   );
                 })}
@@ -1277,7 +1324,7 @@ export const TableWidget = ({ config }: TableWidgetProps) => {
                             <button
                               type="button"
                               onClick={saveEdit}
-                              disabled={isLoading || !canSaveEditingRow}
+                              disabled={isLoading}
                               className="px-3 py-1 text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap flex-shrink-0"
                               style={{ 
                                 display: 'inline-block', 
@@ -1363,7 +1410,7 @@ export const TableWidget = ({ config }: TableWidgetProps) => {
                       <button
                         type="button"
                         onClick={saveAdd}
-                        disabled={loadingRowIndex === -1 || !canSaveNewRow}
+                        disabled={loadingRowIndex === -1}
                         className="px-3 py-1 text-xs disabled:opacity-50 disabled:cursor-not-allowed"
                         style={{
                           borderRadius: 'var(--owt-btn-border-radius)',
@@ -1376,10 +1423,7 @@ export const TableWidget = ({ config }: TableWidgetProps) => {
                       </button>
                       <button
                         type="button"
-                        onClick={() => {
-                          setIsAdding(false);
-                          setNewRowData(null);
-                        }}
+                        onClick={cancelEdit}
                         disabled={loadingRowIndex === -1}
                         className="px-3 py-1 text-xs disabled:opacity-50"
                         style={{
